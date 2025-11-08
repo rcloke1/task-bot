@@ -1,5 +1,5 @@
-import os
-from aiogram import Bot, Dispatcher, types, executor
+   import os
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from datetime import datetime, timedelta
@@ -110,4 +110,9 @@ async def clear_today(call: CallbackQuery):
 
 if __name__ == '__main__':
     asyncio.run(init_db())
-    executor.start_polling(dp, skip_updates=True)
+    async def main():
+    await init_db()
+    await dp.start_polling(bot, skip_updates=True)
+
+if __name__ == '__main__':
+    asyncio.run(main())
