@@ -1,14 +1,21 @@
 import os
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.filters import Command, StateFilter
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime, timedelta
 import aiosqlite
 import asyncio
 
 bot = Bot(token=os.getenv("TOKEN"))
-dp = Dispatcher(bot, storage=MemoryStorage())
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 DB = "tasks.db"
+
+class TaskState(StatesGroup):
+    waiting_task = State()
 
 async def init_db():
     async with aiosqlite.connect(DB) as db:
@@ -17,14 +24,15 @@ async def init_db():
         await db.commit()
 
 def main_menu():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data="add"))
-    kb.add(InlineKeyboardButton("📅 Сегодня", callback_data="today"))
-    kb.add(InlineKeyboardButton("📊 Статистика", callback_data="stats"))
-    kb.add(InlineKeyboardButton("🗑 Очистить всё", callback_data="clear"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить задачу", callback_data="add")],
+        [InlineKeyboardButton(text="📅 Сегодня", callback_data="today")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="🗑 Очистить всё", callback_data="clear")]
+    ])
     return kb
 
-@dp.message_handler(commands=['start'])
+@dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "🔥 Привет, ебарь времени!\n\nЯ твой личный планировщик, который не даёт тебе быть лузером.\n"
@@ -32,24 +40,24 @@ async def start(message: types.Message):
         reply_markup=main_menu()
     )
 
-@dp.callback_query_handler(lambda c: c.data == "add")
-async def add_task(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "add")
+async def add_task(call: CallbackQuery, state: FSMContext):
     await call.message.answer("📝 Пиши задачу, которую надо заебать сегодня:")
     await call.answer()
-    await dp.current_state(user=call.from_user.id).set_state("waiting_task")
+    await state.set_state(TaskState.waiting_task)
 
-@dp.message_handler(state="waiting_task")
-async def save_task(message: types.Message, state):
+@dp.message(StateFilter(TaskState.waiting_task))
+async def save_task(message: types.Message, state: FSMContext):
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB) as db:
         await db.execute("INSERT INTO tasks (user_id, text, date, done) VALUES (?, ?, ?, 0)",
                         (message.from_user.id, message.text, today))
         await db.commit()
     await message.answer(f"✅ Задача добавлена!\n\n「{message.text}」", reply_markup=main_menu())
-    await state.finish()
+    await state.clear()
 
-@dp.callback_query_handler(lambda c: c.data == "today")
-async def show_today(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "today")
+async def show_today(call: CallbackQuery):
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB) as db:
         async with db.execute("SELECT id, text, done FROM tasks WHERE user_id=? AND date=?", 
@@ -61,18 +69,18 @@ async def show_today(call: types.CallbackQuery):
         return
 
     text = f"📅 *Задачи на {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-    kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
     for task in tasks:
         status = "✅" if task[2] else "⬜"
         text += f"{status} {task[1]}\n"
         if not task[2]:
-            kb.add(InlineKeyboardButton(f"{status} {task[1]}", callback_data=f"done_{task[0]}"))
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"{status} {task[1]}", callback_data=f"done_{task[0]}")])
     
-    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="today"))
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="today")])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-@dp.callback_query_handler(lambda c: c.data.startswith("done_"))
-async def task_done(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("done_"))
+async def task_done(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
     async with aiosqlite.connect(DB) as db:
         await db.execute("UPDATE tasks SET done=1 WHERE id=?", (task_id,))
@@ -80,8 +88,8 @@ async def task_done(call: types.CallbackQuery):
     await call.answer("✅ Засчитано, красавчик!")
     await show_today(call)
 
-@dp.callback_query_handler(lambda c: c.data == "stats")
-async def stats(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "stats")
+async def stats(call: CallbackQuery):
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB) as db:
         async with db.execute("SELECT done FROM tasks WHERE user_id=? AND date>=?", 
@@ -100,8 +108,8 @@ async def stats(call: types.CallbackQuery):
         reply_markup=main_menu(), parse_mode="Markdown"
     )
 
-@dp.callback_query_handler(lambda c: c.data == "clear")
-async def clear_today(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "clear")
+async def clear_today(call: CallbackQuery):
     today = datetime.now().strftime("%Y-%m-%d")
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB) as db:
